@@ -1,0 +1,374 @@
+// 上下文时间线：读取插件后端 /list /detail，渲染逐请求的组成与变化。
+// 只依赖 AstrBot 注入的 window.AstrBotPluginView bridge，无第三方库。
+
+// 两种运行方式共用同一份页面：
+// 1) AstrBot 插件视图：走注入的 window.AstrBotPluginView bridge；
+// 2) 插件自带的本地页面（http://127.0.0.1:6199）：没有 bridge，直接 fetch 同源 /api/*。
+function localBridge() {
+  return {
+    ready: async () => ({}),
+    apiGet: async (path, params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      const res = await fetch(`/api/${path}${qs ? `?${qs}` : ""}`);
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (body && body.message) msg = body.message;
+        } catch {
+          /* 响应体不是 JSON 就用状态码 */
+        }
+        throw new Error(msg);
+      }
+      return await res.json();
+    },
+  };
+}
+
+const bridge = window.AstrBotPluginView || localBridge();
+
+const CATS = [
+  ["system", "系统提示词", "#6b8cff"],
+  ["tools", "工具定义", "#8b5cf6"],
+  ["user", "用户消息", "#22c55e"],
+  ["assistant", "助手回复", "#f59e0b"],
+  ["tool_calls", "工具调用", "#ef4444"],
+  ["tool_result", "工具结果", "#14b8a6"],
+  ["reasoning", "推理", "#a855f7"],
+  ["prompt", "本次输入", "#f472b6"],
+];
+const CAT_LABEL = Object.fromEntries(CATS.map(([k, label]) => [k, label]));
+const CAT_COLOR = Object.fromEntries(CATS.map(([k, , c]) => [k, c]));
+
+const state = { date: "", umo: "", steps: [], selected: null };
+
+const $ = (sel) => document.querySelector(sel);
+
+function today() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function fmtTok(n) {
+  n = Number(n) || 0;
+  if (n >= 1000000) return (n / 1000000).toFixed(2) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return String(n);
+}
+
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+async function api(path, params = {}) {
+  const res = await bridge.apiGet(path, params);
+  if (res && res.status === "error") throw new Error(res.message || "接口返回错误");
+  if (!res) throw new Error("接口无返回");
+  return res;
+}
+
+// ---------------------------------------------------------------- 渲染：条形
+function buildBar(breakdown, total, options = {}) {
+  const bar = el("div", "bar");
+  const denom = Math.max(1, options.scale || total || 1);
+  bar.style.width = options.scale ? `${Math.min(100, (total / denom) * 100)}%` : "100%";
+  bar.classList.add("bar-inner");
+  const wrap = el("div", "bar-wrap");
+  wrap.appendChild(bar);
+  for (const [key, , color] of CATS) {
+    const v = breakdown[key] || 0;
+    if (!v) continue;
+    const seg = el("div", "seg");
+    seg.style.width = `${(v / Math.max(1, total)) * 100}%`;
+    seg.style.background = color;
+    seg.title = `${CAT_LABEL[key]} ≈ ${fmtTok(v)} tokens`;
+    bar.appendChild(seg);
+  }
+  if (total === 0) {
+    bar.appendChild(el("div", "seg seg-empty"));
+  }
+  return wrap;
+}
+
+// ---------------------------------------------------------------- 渲染：时间线
+function renderTimeline() {
+  const box = $("#timeline");
+  box.textContent = "";
+  $("#count").textContent = state.steps.length ? `共 ${state.steps.length} 次请求` : "";
+
+  if (!state.steps.length) {
+    box.appendChild(el("div", "empty", "这一天没有记录。发一条消息给机器人再刷新。"));
+    return;
+  }
+
+  const maxTotal = Math.max(...state.steps.map((s) => s.tokens || 0), 1);
+  const kpi = $("#kpis");
+  kpi.textContent = "";
+  const sum = state.steps.reduce((a, s) => a + (s.tokens || 0), 0);
+  const maxCtx = Math.max(...state.steps.map((s) => s.n_contexts || 0), 0);
+  for (const [label, value] of [
+    ["请求", state.steps.length],
+    ["估算 token 合计", fmtTok(sum)],
+    ["单次最大", fmtTok(maxTotal)],
+    ["contexts 峰值", maxCtx],
+  ]) {
+    const chip = el("div", "kpi");
+    chip.appendChild(el("span", "kpi-k", label));
+    chip.appendChild(el("span", "kpi-v", typeof value === "number" && label === "请求" ? value : value));
+    kpi.appendChild(chip);
+  }
+
+  for (const step of state.steps) {
+    const row = el("button", "step");
+    row.dataset.seq = step.seq;
+    if (state.selected === step.seq) row.classList.add("active");
+
+    const head = el("div", "step-head");
+    head.appendChild(el("span", "seq", `#${step.seq}`));
+    head.appendChild(el("span", "time", fmtTime(step.iso)));
+    head.appendChild(el("span", "spacer"));
+    head.appendChild(el("span", "ctx", `${step.n_contexts} 条`));
+    head.appendChild(el("span", "tok", fmtTok(step.tokens)));
+    row.appendChild(head);
+
+    // 用全体最大值做刻度，才能看出各轮相对大小
+    row.appendChild(buildBar(step.breakdown || {}, step.tokens || 0, { scale: maxTotal }));
+    row.addEventListener("click", () => selectStep(step.seq));
+    box.appendChild(row);
+  }
+}
+
+// ---------------------------------------------------------------- 渲染：详情
+function renderDelta(step) {
+  const prev = step.prev;
+  if (!prev) return el("div", "muted", "这是该会话的第一条请求。");
+  const box = el("div", "delta");
+  const cur = step.breakdown || {};
+  const old = prev.breakdown || {};
+  const total = (cur.total || 0) - (old.total || 0);
+  const head = el("div", "delta-head");
+  head.appendChild(el("span", "muted", `对比 #${prev.seq}：`));
+  const badge = el("span", "badge " + (total >= 0 ? "up" : "down"), `${total >= 0 ? "+" : ""}${fmtTok(total)} tokens`);
+  head.appendChild(badge);
+  head.appendChild(el("span", "muted", `（上下文 ${old.n_contexts} → ${step.n_contexts} 条）`));
+  box.appendChild(head);
+
+  const chips = el("div", "chips");
+  for (const [key, , color] of CATS) {
+    const d = (cur[key] || 0) - (old[key] || 0);
+    if (!d) continue;
+    const chip = el("span", "chip " + (d > 0 ? "up" : "down"));
+    chip.style.borderColor = color;
+    chip.appendChild(el("span", "dot", "●")).style.color = color;
+    chip.appendChild(el("span", null, `${CAT_LABEL[key]} ${d > 0 ? "+" : ""}${fmtTok(d)}`));
+    chips.appendChild(chip);
+  }
+  if (chips.childElementCount) box.appendChild(chips);
+  return box;
+}
+
+function collapse(title, node, open) {
+  const d = document.createElement("details");
+  d.className = "sec";
+  if (open) d.open = true;
+  const s = document.createElement("summary");
+  s.textContent = title;
+  d.appendChild(s);
+  d.appendChild(node);
+  return d;
+}
+
+function renderDetail(step) {
+  const box = $("#detail");
+  box.textContent = "";
+
+  const head = el("div", "detail-head");
+  const title = el("div", "detail-title");
+  title.appendChild(el("span", "seq", `#${step.seq}`));
+  title.appendChild(el("span", "muted", `${step.iso || ""}`));
+  head.appendChild(title);
+
+  const meta = el("div", "meta");
+  for (const [k, v] of [
+    ["会话", step.umo || "-"],
+    ["发送者", step.sender || "-"],
+    ["平台", step.platform || "-"],
+    ["模型", step.model || "-"],
+    ["上下文条数", step.n_contexts],
+    ["估算 tokens", fmtTok((step.breakdown || {}).total || 0)],
+  ]) {
+    const item = el("div", "meta-item");
+    item.appendChild(el("span", "meta-k", k));
+    item.appendChild(el("span", "meta-v", v));
+    meta.appendChild(item);
+  }
+  head.appendChild(meta);
+  box.appendChild(head);
+
+  // 组成条
+  const compo = el("div", "card");
+  compo.appendChild(el("div", "card-title", "组成"));
+  compo.appendChild(buildBar(step.breakdown || {}, (step.breakdown || {}).total || 0));
+  const legend = el("div", "legend");
+  for (const [key, , color] of CATS) {
+    const v = (step.breakdown || {})[key] || 0;
+    if (!v) continue;
+    const item = el("span", "legend-item");
+    const dot = el("span", "dot", "●");
+    dot.style.color = color;
+    item.appendChild(dot);
+    item.appendChild(el("span", null, `${CAT_LABEL[key]} ${fmtTok(v)}`));
+    legend.appendChild(item);
+  }
+  compo.appendChild(legend);
+  box.appendChild(compo);
+
+  // 与上一轮的差异
+  const deltaCard = el("div", "card");
+  deltaCard.appendChild(el("div", "card-title", "与上一轮相比"));
+  deltaCard.appendChild(renderDelta(step));
+  box.appendChild(deltaCard);
+
+  // 系统提示词
+  if (step.system_prompt) {
+    const pre = el("pre", "pre", step.system_prompt);
+    box.appendChild(collapse(`系统提示词 · ≈${fmtTok(step.breakdown.system)} tokens`, pre, false));
+  }
+
+  // 工具定义
+  const tools = step.tool_items || [];
+  if (tools.length) {
+    const list = el("div", "tool-list");
+    for (const t of tools) {
+      const row = el("div", "tool-row");
+      row.appendChild(el("span", "tool-name", t.name));
+      row.appendChild(el("span", "spacer"));
+      row.appendChild(el("span", "muted", `≈${fmtTok(t.tokens)}`));
+      list.appendChild(row);
+    }
+    box.appendChild(collapse(`工具定义 · ${tools.length} 个 · ≈${fmtTok(step.breakdown.tools)} tokens`, list, false));
+  }
+
+  // 消息
+  const contexts = step.contexts || [];
+  if (contexts.length) {
+    const list = el("div", "msgs");
+    const items = step.msg_items || [];
+    contexts.forEach((msg, idx) => {
+      const role = (msg && msg.role) || "user";
+      const tokens = (items[idx] || {}).tokens || 0;
+      const raw = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2);
+      const d = document.createElement("details");
+      d.className = "msg";
+      const s = document.createElement("summary");
+      s.appendChild(el("span", "idx", `#${idx + 1}`));
+      s.appendChild(el("span", "role role-" + role, role));
+      s.appendChild(el("span", "preview", (raw || "").replace(/\s+/g, " ").slice(0, 90)));
+      s.appendChild(el("span", "spacer"));
+      s.appendChild(el("span", "muted", `≈${fmtTok(tokens)}`));
+      d.appendChild(s);
+      d.appendChild(el("pre", "pre", raw));
+      list.appendChild(d);
+    });
+    box.appendChild(collapse(`消息 · ${contexts.length} 条 · ≈${fmtTok(step.breakdown.user + step.breakdown.assistant + step.breakdown.tool_result + step.breakdown.tool_calls + step.breakdown.reasoning)} tokens`, list, true));
+  }
+
+  // 本次输入
+  if (step.prompt) {
+    box.appendChild(collapse(`本次输入 · ≈${fmtTok(step.breakdown.prompt)} tokens`, el("pre", "pre", step.prompt), false));
+  }
+}
+
+// ---------------------------------------------------------------- 数据流
+async function selectStep(seq) {
+  state.selected = seq;
+  for (const row of document.querySelectorAll(".step")) {
+    row.classList.toggle("active", Number(row.dataset.seq) === Number(seq));
+  }
+  const box = $("#detail");
+  box.textContent = "";
+  box.appendChild(el("div", "empty", "加载中…"));
+  try {
+    const res = await api("detail", { date: state.date, seq, full: 1 });
+    renderDetail(res.step);
+  } catch (err) {
+    box.textContent = "";
+    box.appendChild(el("div", "empty", `加载失败：${err.message}`));
+  }
+}
+
+async function loadSessions() {
+  try {
+    const res = await api("sessions", { date: state.date });
+    const sel = $("#sessions");
+    sel.textContent = "";
+    sel.appendChild(new Option("全部会话", ""));
+    for (const s of res.sessions || []) {
+      sel.appendChild(new Option(`${s.umo}（${s.steps}）`, s.umo));
+    }
+    if (state.umo) sel.value = state.umo;
+  } catch {
+    /* 会话列表失败不影响主流程 */
+  }
+}
+
+async function loadList() {
+  const box = $("#timeline");
+  box.textContent = "";
+  box.appendChild(el("div", "empty", "加载中…"));
+  try {
+    const res = await api("list", { date: state.date, umo: state.umo, limit: 400 });
+    state.steps = res.steps || [];
+    renderTimeline();
+    if (state.steps.length) {
+      const keep = state.steps.find((s) => s.seq === state.selected);
+      await selectStep((keep || state.steps[state.steps.length - 1]).seq);
+    } else {
+      $("#detail").textContent = "";
+      $("#detail").appendChild(el("div", "empty", "没有可显示的请求。"));
+    }
+  } catch (err) {
+    box.textContent = "";
+    box.appendChild(el("div", "empty", `加载失败：${err.message}`));
+  }
+}
+
+async function boot() {
+  if (typeof bridge.ready === "function") await bridge.ready();
+  state.date = today();
+  $("#date").value = state.date;
+  $("#date").addEventListener("change", (e) => {
+    state.date = e.target.value || today();
+    state.selected = null;
+    loadSessions();
+    loadList();
+  });
+  $("#sessions").addEventListener("change", (e) => {
+    state.umo = e.target.value;
+    state.selected = null;
+    loadList();
+  });
+  $("#reload").addEventListener("click", () => {
+    loadSessions();
+    loadList();
+  });
+  await loadSessions();
+  await loadList();
+}
+
+boot().catch((err) => {
+  document.body.textContent = "";
+  document.body.appendChild(el("div", "empty", `初始化失败：${err.message}`));
+});

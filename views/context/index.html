@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>上下文时间线</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">上下文时间线</div>
+      <input id="date" type="date" class="ctl" />
+      <select id="sessions" class="ctl">
+        <option value="">全部会话</option>
+      </select>
+      <button id="reload" class="ctl">刷新</button>
+      <div id="kpis" class="kpis"></div>
+    </header>
+
+    <main>
+      <section class="pane pane-left">
+        <div class="pane-head">时间线 <span id="count" class="muted"></span></div>
+        <div id="timeline" class="timeline">
+          <div class="empty">加载中…</div>
+        </div>
+      </section>
+
+      <section class="pane pane-right">
+        <div id="detail" class="detail">
+          <div class="empty">选择左侧任意一次请求，查看它由什么组成。</div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

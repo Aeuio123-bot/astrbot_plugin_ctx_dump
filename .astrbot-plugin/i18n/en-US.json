@@ -1,0 +1,11 @@
+{
+  "metadata": {
+    "display_name": "Context Timeline",
+    "desc": "Persist every provider request's full context and browse how it is composed and how it evolves."
+  },
+  "views": {
+    "context": {
+      "title": "Context Timeline"
+    }
+  }
+}

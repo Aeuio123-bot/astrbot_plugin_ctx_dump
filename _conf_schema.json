@@ -1,0 +1,37 @@
+{
+  "include_tools": {
+    "type": "bool",
+    "description": "记录本次请求可用的工具名与参数 schema",
+    "default": true
+  },
+  "keep_latest": {
+    "type": "bool",
+    "description": "额外写入 latest.json（最近一次请求，格式化好，方便直接翻）",
+    "default": true
+  },
+  "retention_days": {
+    "type": "int",
+    "description": "JSONL 保留天数，0 表示不自动清理",
+    "default": 7
+  },
+  "redact": {
+    "type": "bool",
+    "description": "对疑似 API Key / token 做掩码（建议开）",
+    "default": true
+  },
+  "local_server": {
+    "type": "bool",
+    "description": "启动插件自带的本地页面服务（不依赖 AstrBot WebUI）",
+    "default": true
+  },
+  "local_bind": {
+    "type": "string",
+    "description": "本地页面监听地址。默认 127.0.0.1 只允许本机访问；改成 0.0.0.0 会暴露到局域网",
+    "default": "127.0.0.1"
+  },
+  "local_port": {
+    "type": "int",
+    "description": "本地页面端口，0 表示不启动",
+    "default": 6199
+  }
+}

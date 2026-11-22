@@ -1,0 +1,11 @@
+{
+  "metadata": {
+    "display_name": "上下文时间线",
+    "desc": "把每次发往 LLM 的完整上下文落盘，并在 WebUI 里看它的组成、每一轮怎么变。"
+  },
+  "views": {
+    "context": {
+      "title": "上下文时间线"
+    }
+  }
+}
