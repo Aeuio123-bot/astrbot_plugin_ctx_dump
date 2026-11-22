@@ -66,14 +66,6 @@ const CATS = [
 const CAT_LABEL = Object.fromEntries(CATS.map(([k, label]) => [k, label]));
 const CAT_COLOR = Object.fromEntries(CATS.map(([k, , c]) => [k, c]));
 
-// 消息角色图标，用来把消息列表读成一条「注入时间线」
-const ROLE_ICON = {
-  system: "⚙",
-  user: "👤",
-  assistant: "🤖",
-  tool: "🔧",
-};
-
 const state = {
   date: "",
   umo: "",
@@ -333,7 +325,7 @@ function buildMessageSection(step) {
   const hint = el(
     "div",
     "msgs-hint",
-    "每行的「#n 注入」= 这条消息在第 n 次请求时进入上下文；⚙ 系统 · 👤 用户 · 🤖 助手 · 🔧 工具",
+    "左侧色条＝角色：蓝 系统 · 绿 用户 · 橙 助手 · 青 工具；「#n 注入」＝这条消息在第 n 次请求时进入上下文",
   );
   sec.appendChild(hint);
 
@@ -369,9 +361,10 @@ function buildMessageSection(step) {
 
     const d = document.createElement("details");
     d.className =
-      "msg" + (msgState === "new" ? " msg-new" : msgState === "changed" ? " msg-chg" : "");
+      "msg msg-role-" +
+      role +
+      (msgState === "new" ? " msg-new" : msgState === "changed" ? " msg-chg" : "");
     const s = document.createElement("summary");
-    s.appendChild(el("span", "micon", ROLE_ICON[role] || "•"));
     s.appendChild(el("span", "idx", `#${idx + 1}`));
     s.appendChild(el("span", "role role-" + role, role));
     if (item.summary) s.appendChild(el("span", "tag tag-cut", "摘要"));
@@ -533,7 +526,16 @@ function renderPressure() {
   box.textContent = "";
   const p = state.pressure;
   if (!p) {
-    box.style.display = "none";
+    // 不要静默隐藏：要么后端没返回（未重载插件），要么本地页面端口没起来
+    box.style.display = "";
+    box.appendChild(el("span", "pr-label", "上下文压力"));
+    box.appendChild(
+      el(
+        "span",
+        "muted",
+        "暂不可用：后端没有返回压力数据。重载插件后再刷新；若是本地页面，确认 local_port 已启动。",
+      ),
+    );
     return;
   }
   box.style.display = "";

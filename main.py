@@ -52,7 +52,18 @@ CATS = (
 
 # AstrBot dashboard 与 OneBot 反向 WS 的常用端口，插件本地页面必须避开
 _RESERVED_PORTS = {6185, 6199}
-_DEFAULT_LOCAL_PORT = 6299
+_DEFAULT_LOCAL_PORT = 6311
+
+
+class _LocalHTTPServer(ThreadingHTTPServer):
+    """不允许地址复用：端口被别人占着时必须失败，而不是和旧监听共享端口。
+
+    ThreadingHTTPServer 默认 allow_reuse_address=True，在 Windows 上会让新旧两个
+    监听同时存在，连接可能落到旧的那个，表现为「插件已重载但接口还是老数据」。
+    """
+
+    allow_reuse_address = False
+    daemon_threads = True
 
 
 def _port_in_use(bind: str, port: int) -> bool:
@@ -719,8 +730,7 @@ class CtxDumpPlugin(Star):
             return
 
         try:
-            httpd = ThreadingHTTPServer((self.local_bind, self.local_port), Handler)
-            httpd.daemon_threads = True
+            httpd = _LocalHTTPServer((self.local_bind, self.local_port), Handler)
         except OSError as exc:
             self.port_notice = (
                 f"本地页面启动失败：绑定 {self.local_bind}:{self.local_port} 出错（{exc}）。"
