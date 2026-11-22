@@ -87,12 +87,17 @@ main {
 }
 
 .pane-head {
-  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
   border-bottom: 1px solid var(--line);
   font-weight: 600;
   color: var(--muted);
   font-size: 12px;
 }
+.pane-head .tl-order { margin-left: auto; }
+.pane-head #count { margin-left: 4px; font-weight: 400; }
 
 .timeline { padding: 8px; max-height: calc(100vh - 150px); overflow: auto; }
 

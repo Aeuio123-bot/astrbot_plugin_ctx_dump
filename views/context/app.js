@@ -72,9 +72,10 @@ const state = {
   steps: [],
   selected: null,
   detail: null,
-  // 消息列表的两种视图偏好；沙箱 iframe 里 localStorage 不可用，自动退化成内存
+  // 消息列表 / 时间线的视图偏好；沙箱 iframe 里 localStorage 不可用，自动退化成内存
+  tlOrder: storage.getItem("ctxdump.tlOrder") || "desc",
   msgsOrder: storage.getItem("ctxdump.msgsOrder") || "asc",
-  msgsMode: storage.getItem("ctxdump.msgsMode") || "all",
+  msgsMode: storage.getItem("ctxdump.msgsMode2") || "diff",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -165,7 +166,10 @@ function renderTimeline() {
     kpi.appendChild(chip);
   }
 
-  for (const step of state.steps) {
+  // 时间线排序：默认最新在上（逆序）
+  const ordered = state.tlOrder === "desc" ? [...state.steps].reverse() : state.steps;
+
+  for (const step of ordered) {
     const row = el("button", "step");
     row.dataset.id = step.id;
     if (state.selected === step.id) row.classList.add("active");
@@ -174,6 +178,9 @@ function renderTimeline() {
     head.appendChild(el("span", "seq", `#${step.n ?? step.seq}`));
     head.appendChild(el("span", "time", fmtTime(step.iso)));
     head.appendChild(el("span", "spacer"));
+    const diff = step.diff || {};
+    if (diff.new) head.appendChild(el("span", "tag tag-new", `+${diff.new}`));
+    if (diff.changed) head.appendChild(el("span", "tag tag-chg", `~${diff.changed}`));
     if (step.compress) {
       const c = step.compress;
       const tag = el(
@@ -535,6 +542,26 @@ async function boot() {
   }
   state.date = today();
   $("#date").value = state.date;
+
+  // 时间线排序开关（默认新→旧）
+  const tlOrder = $("#tl-order");
+  if (tlOrder) {
+    tlOrder.appendChild(
+      seg(
+        "排序",
+        [
+          ["asc", "旧 → 新"],
+          ["desc", "新 → 旧"],
+        ],
+        state.tlOrder,
+        (v) => {
+          state.tlOrder = v;
+          storage.setItem("ctxdump.tlOrder", v);
+          renderTimeline();
+        },
+      ),
+    );
+  }
   $("#date").addEventListener("change", (e) => {
     state.date = e.target.value || today();
     state.selected = null;

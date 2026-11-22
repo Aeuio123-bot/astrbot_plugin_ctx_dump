@@ -301,6 +301,23 @@ def build_sessions(records: list[dict]) -> dict:
     return {"sessions": sorted(counts.values(), key=lambda x: -x["steps"])}
 
 
+def _diff_counts(prev: dict | None, cur: dict) -> dict:
+    """相对上一轮，本次请求里新增/被改写了多少条消息（按下标对齐的近似）。"""
+    if not prev:
+        return {"new": 0, "changed": 0}
+    prev_ctx = prev.get("contexts") or []
+    cur_ctx = cur.get("contexts") or []
+    new = changed = 0
+    for i, m in enumerate(cur_ctx):
+        if not isinstance(m, dict):
+            continue
+        if i >= len(prev_ctx):
+            new += 1
+        elif _msg_text(m).strip() != _msg_text(prev_ctx[i]).strip():
+            changed += 1
+    return {"new": new, "changed": changed}
+
+
 def build_list(records: list[dict], umo: str, limit: int) -> dict:
     reqs = [r for r in records if r.get("kind") != "response"]
     # 按时间排序并给当天每条请求一个稳定序号 n（与 seq 无关，重载后不会重复）
@@ -308,13 +325,16 @@ def build_list(records: list[dict], umo: str, limit: int) -> dict:
     steps = []
     prev_by_umo: dict[str, dict] = {}
     for n, rec in enumerate(reqs, start=1):
-        comp = _compaction(prev_by_umo.get(rec.get("umo") or ""), rec)
+        prev_rec = prev_by_umo.get(rec.get("umo") or "")
+        comp = _compaction(prev_rec, rec)
+        diff = _diff_counts(prev_rec, rec)
         prev_by_umo[rec.get("umo") or ""] = rec
         if umo and rec.get("umo") != umo:
             continue
         s = _summary(rec)
         s["n"] = n
         s["id"] = record_id(rec)
+        s["diff"] = diff
         if comp:
             s["compress"] = comp
         steps.append(s)
