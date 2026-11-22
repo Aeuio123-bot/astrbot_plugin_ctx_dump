@@ -8,6 +8,7 @@ short_desc: 上下文落盘 + 时间线查看
 version: 0.3.0
 author: Aeuio123-bot
 repo: https://github.com/Aeuio123-bot/astrbot_plugin_ctx_dump
+logo: logo.png
 astrbot_version: ">=4.16"
 tags:
   - context
