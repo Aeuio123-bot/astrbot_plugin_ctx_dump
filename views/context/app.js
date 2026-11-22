@@ -40,7 +40,16 @@ const CATS = [
 const CAT_LABEL = Object.fromEntries(CATS.map(([k, label]) => [k, label]));
 const CAT_COLOR = Object.fromEntries(CATS.map(([k, , c]) => [k, c]));
 
-const state = { date: "", umo: "", steps: [], selected: null };
+const state = {
+  date: "",
+  umo: "",
+  steps: [],
+  selected: null,
+  detail: null,
+  // 消息列表的两种视图偏好，存在 localStorage 里，刷新后保持
+  msgsOrder: localStorage.getItem("ctxdump.msgsOrder") || "asc",
+  msgsMode: localStorage.getItem("ctxdump.msgsMode") || "all",
+};
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -190,6 +199,118 @@ function collapse(title, node, open) {
   return d;
 }
 
+// ------------------------------------------------------------ 消息列表（排序 / 增量）
+function msgTokens(step) {
+  const b = step.breakdown || {};
+  return (b.user || 0) + (b.assistant || 0) + (b.tool_result || 0) + (b.tool_calls || 0) + (b.reasoning || 0);
+}
+
+function seg(title, options, current, onPick) {
+  const wrap = el("div", "seg-ctl");
+  wrap.appendChild(el("span", "seg-title", title));
+  for (const [value, label] of options) {
+    const btn = el("button", "seg-btn" + (value === current ? " on" : ""), label);
+    btn.addEventListener("click", () => onPick(value));
+    wrap.appendChild(btn);
+  }
+  return wrap;
+}
+
+function rerenderDetail() {
+  if (state.detail) renderDetail(state.detail);
+}
+
+function buildMessageSection(step) {
+  const contexts = step.contexts || [];
+  const items = step.msg_items || [];
+  const diff = step.diff || {};
+
+  const sec = document.createElement("details");
+  sec.className = "sec";
+  sec.open = true;
+
+  const summary = document.createElement("summary");
+  summary.appendChild(document.createTextNode(`消息 · ${contexts.length} 条 · ≈${fmtTok(msgTokens(step))} tokens `));
+  if (diff.new) summary.appendChild(el("span", "tag tag-new", `+${diff.new}`));
+  if (diff.changed) summary.appendChild(el("span", "tag tag-chg", `~${diff.changed}`));
+  if (diff.removed) summary.appendChild(el("span", "tag tag-del", `-${diff.removed}`));
+  sec.appendChild(summary);
+
+  const bar = el("div", "msgs-bar");
+  bar.appendChild(
+    seg(
+      "排序",
+      [
+        ["asc", "旧 → 新"],
+        ["desc", "新 → 旧"],
+      ],
+      state.msgsOrder,
+      (v) => {
+        state.msgsOrder = v;
+        localStorage.setItem("ctxdump.msgsOrder", v);
+        rerenderDetail();
+      },
+    ),
+  );
+  bar.appendChild(
+    seg(
+      "显示",
+      [
+        ["all", "全部"],
+        ["diff", "仅变更"],
+      ],
+      state.msgsMode,
+      (v) => {
+        state.msgsMode = v;
+        localStorage.setItem("ctxdump.msgsMode", v);
+        rerenderDetail();
+      },
+    ),
+  );
+  sec.appendChild(bar);
+
+  const list = el("div", "msgs");
+  let order = contexts.map((_, i) => i);
+  if (state.msgsOrder === "desc") order.reverse();
+  if (state.msgsMode === "diff") {
+    order = order.filter((i) => {
+      const st = (items[i] || {}).state;
+      return st === "new" || st === "changed";
+    });
+  }
+
+  if (!order.length) {
+    list.appendChild(
+      el("div", "empty", diff.prev_count ? "这一轮没有新增或改动的消息。" : "没有可显示的消息。"),
+    );
+  }
+
+  for (const idx of order) {
+    const msg = contexts[idx] || {};
+    const role = msg.role || "user";
+    const tokens = (items[idx] || {}).tokens || 0;
+    const msgState = (items[idx] || {}).state || "same";
+    const raw = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2);
+
+    const d = document.createElement("details");
+    d.className = "msg" + (msgState === "new" ? " msg-new" : msgState === "changed" ? " msg-chg" : "");
+    const s = document.createElement("summary");
+    s.appendChild(el("span", "idx", `#${idx + 1}`));
+    s.appendChild(el("span", "role role-" + role, role));
+    if (msgState === "new") s.appendChild(el("span", "tag tag-new", "新增"));
+    else if (msgState === "changed") s.appendChild(el("span", "tag tag-chg", "改动"));
+    s.appendChild(el("span", "preview", (raw || "").replace(/\s+/g, " ").slice(0, 80)));
+    s.appendChild(el("span", "spacer"));
+    s.appendChild(el("span", "muted", `≈${fmtTok(tokens)}`));
+    d.appendChild(s);
+    d.appendChild(el("pre", "pre", raw));
+    list.appendChild(d);
+  }
+
+  sec.appendChild(list);
+  return sec;
+}
+
 function renderDetail(step) {
   const box = $("#detail");
   box.textContent = "";
@@ -261,28 +382,10 @@ function renderDetail(step) {
     box.appendChild(collapse(`工具定义 · ${tools.length} 个 · ≈${fmtTok(step.breakdown.tools)} tokens`, list, false));
   }
 
-  // 消息
+  // 消息（可切换排序 / 增量视图）
   const contexts = step.contexts || [];
   if (contexts.length) {
-    const list = el("div", "msgs");
-    const items = step.msg_items || [];
-    contexts.forEach((msg, idx) => {
-      const role = (msg && msg.role) || "user";
-      const tokens = (items[idx] || {}).tokens || 0;
-      const raw = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2);
-      const d = document.createElement("details");
-      d.className = "msg";
-      const s = document.createElement("summary");
-      s.appendChild(el("span", "idx", `#${idx + 1}`));
-      s.appendChild(el("span", "role role-" + role, role));
-      s.appendChild(el("span", "preview", (raw || "").replace(/\s+/g, " ").slice(0, 90)));
-      s.appendChild(el("span", "spacer"));
-      s.appendChild(el("span", "muted", `≈${fmtTok(tokens)}`));
-      d.appendChild(s);
-      d.appendChild(el("pre", "pre", raw));
-      list.appendChild(d);
-    });
-    box.appendChild(collapse(`消息 · ${contexts.length} 条 · ≈${fmtTok(step.breakdown.user + step.breakdown.assistant + step.breakdown.tool_result + step.breakdown.tool_calls + step.breakdown.reasoning)} tokens`, list, true));
+    box.appendChild(buildMessageSection(step));
   }
 
   // 本次输入
@@ -302,8 +405,10 @@ async function selectStep(seq) {
   box.appendChild(el("div", "empty", "加载中…"));
   try {
     const res = await api("detail", { date: state.date, seq, full: 1 });
+    state.detail = res.step;
     renderDetail(res.step);
   } catch (err) {
+    state.detail = null;
     box.textContent = "";
     box.appendChild(el("div", "empty", `加载失败：${err.message}`));
   }

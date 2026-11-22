@@ -242,11 +242,41 @@ def build_detail(records: list[dict], seq: int, full: bool) -> dict | None:
         ]
     detail["breakdown"] = _breakdown(target)
     detail["prev"] = _summary(prev) if prev else None
-    detail["msg_items"] = [
-        {"i": i, "role": m.get("role") or "user", "tokens": estimate_tokens(_msg_text(m))}
-        for i, m in enumerate(target.get("contexts") or [])
-        if isinstance(m, dict)
-    ]
+
+    # 逐条消息：估算 token + 与上一轮的关系（first / new / changed / same）
+    # AstrBot 通常把新消息追加在末尾，所以按下标对齐；上下文被压缩时可能整体错位，
+    # 这种情况会被标成 changed，属于可接受的近似。
+    prev_ctx = (prev.get("contexts") or []) if prev else []
+    msg_items = []
+    n_new = n_changed = 0
+    for i, m in enumerate(target.get("contexts") or []):
+        if not isinstance(m, dict):
+            continue
+        if not prev:
+            state = "first"
+        elif i >= len(prev_ctx):
+            state = "new"
+            n_new += 1
+        elif _msg_text(m).strip() != _msg_text(prev_ctx[i]).strip():
+            state = "changed"
+            n_changed += 1
+        else:
+            state = "same"
+        msg_items.append(
+            {
+                "i": i,
+                "role": m.get("role") or "user",
+                "tokens": estimate_tokens(_msg_text(m)),
+                "state": state,
+            }
+        )
+    detail["msg_items"] = msg_items
+    detail["diff"] = {
+        "new": n_new,
+        "changed": n_changed,
+        "removed": max(0, len(prev_ctx) - len(target.get("contexts") or [])) if prev else 0,
+        "prev_count": len(prev_ctx),
+    }
     detail["tool_items"] = [
         {
             "name": s.get("name") or "",
