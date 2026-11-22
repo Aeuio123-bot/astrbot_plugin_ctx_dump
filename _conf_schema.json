@@ -31,7 +31,7 @@
   },
   "local_port": {
     "type": "int",
-    "description": "本地页面端口，0 表示不启动",
-    "default": 6199
+    "description": "本地页面端口，0 表示不启动。不要用 6185（dashboard）或 6199（OneBot 反向 WS），插件会自动避开这两个端口",
+    "default": 6299
   }
 }

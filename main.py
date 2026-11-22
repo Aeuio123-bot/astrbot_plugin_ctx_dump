@@ -50,6 +50,19 @@ CATS = (
     "summary",
 )
 
+# AstrBot dashboard 与 OneBot 反向 WS 的常用端口，插件本地页面必须避开
+_RESERVED_PORTS = {6185, 6199}
+_DEFAULT_LOCAL_PORT = 6299
+
+
+def _port_in_use(bind: str, port: int) -> bool:
+    """端口已被别人监听时返回 True，避免插件抢端口造成别人的服务失效。"""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        return s.connect_ex((bind, port)) == 0
+
 
 def _iso_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="milliseconds")
@@ -416,7 +429,16 @@ class CtxDumpPlugin(Star):
         self.redact: bool = bool(self.cfg.get("redact", True))
         self.local_server: bool = bool(self.cfg.get("local_server", True))
         self.local_bind: str = str(self.cfg.get("local_bind") or "127.0.0.1")
-        self.local_port: int = int(self.cfg.get("local_port", 6199) or 0)
+        self.local_port: int = int(self.cfg.get("local_port", 6299) or 0)
+
+        # 6185 是 AstrBot dashboard，6199 是 OneBot(aiocqhttp) 反向 WS 端口。
+        # 0.4.0–0.4.3 默认用了 6199，会把 OneBot 的 /ws 连接抢到插件的 HTTP 服务上（404），
+        # 导致 NapCat 一直重连。这里强制避开，并在端口被占用时直接不启动。
+        if self.local_port in _RESERVED_PORTS:
+            logger.warning(
+                f"[ctx_dump] local_port={self.local_port} 与 AstrBot/OneBot 端口冲突，改用 {_DEFAULT_LOCAL_PORT}"
+            )
+            self.local_port = _DEFAULT_LOCAL_PORT
 
         try:
             self.dir: Path = StarTools.get_data_dir(PLUGIN_NAME)
@@ -546,6 +568,13 @@ class CtxDumpPlugin(Star):
                 except Exception as exc:  # 不让页面把插件带崩
                     logger.exception("[ctx_dump] 本地接口异常")
                     return self._json({"status": "error", "message": str(exc)}, 500)
+
+        if _port_in_use(self.local_bind, self.local_port):
+            logger.warning(
+                f"[ctx_dump] 端口 {self.local_port} 已被其他服务占用，本地页面不启动（不影响插件视图和落盘）。"
+                "可在插件配置里把 local_port 换成别的端口。"
+            )
+            return
 
         try:
             httpd = ThreadingHTTPServer((self.local_bind, self.local_port), Handler)
