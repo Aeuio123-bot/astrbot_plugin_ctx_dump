@@ -3,9 +3,9 @@ display_name: 上下文时间线
 desc: >-
   把每次发给 LLM 的完整上下文（system prompt / contexts / prompt / tools）落盘成
   JSONL，并在插件视图或自带本地页面里查看上下文由什么组成、每一轮怎么变化。
-  支持 token 估算分布、逐轮 diff、消息原文展开、上下文压力条、压缩历史与下次压缩预演。
+  支持 token 估算分布、逐轮 diff、消息原文展开；压缩阈值与压缩历史由配套的「上下文信号」插件负责。
 short_desc: 上下文落盘 + 时间线查看
-version: 0.8.0
+version: 0.9.0
 author: Aeuio123-bot
 repo: https://github.com/Aeuio123-bot/astrbot_plugin_ctx_dump
 logo: logo.png

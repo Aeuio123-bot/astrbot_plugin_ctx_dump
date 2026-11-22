@@ -19,11 +19,6 @@
     "description": "对疑似 API Key / token 做掩码（建议开）",
     "default": true
   },
-  "compress_threshold": {
-    "type": "float",
-    "description": "上下文压缩触发阈值（AstrBot 默认 0.82，即用到模型上限的 82% 时压缩）。用于压力条位置与「下次压缩预演」的计算，不影响 AstrBot 实际行为",
-    "default": 0.82
-  },
   "local_server": {
     "type": "bool",
     "description": "启动插件自带的本地页面服务（不依赖 AstrBot WebUI）",

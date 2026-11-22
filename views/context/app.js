@@ -72,9 +72,6 @@ const state = {
   steps: [],
   selected: null,
   detail: null,
-  pressure: null,
-  compactions: [],
-  forecast: null,
   notice: null,
   // 消息列表 / 时间线的视图偏好；沙箱 iframe 里 localStorage 不可用，自动退化成内存
   tlOrder: storage.getItem("ctxdump.tlOrder") || "desc",
@@ -520,152 +517,6 @@ async function selectStep(id) {
   }
 }
 
-// ---------------------------------------------------------------- 压力 / 压缩历史
-function renderPressure() {
-  const box = $("#pressure");
-  if (!box) return;
-  box.textContent = "";
-  const p = state.pressure;
-  if (!p) {
-    // 不要静默隐藏：要么后端没返回（未重载插件），要么本地页面端口没起来
-    box.style.display = "";
-    box.appendChild(el("span", "pr-label", "上下文压力"));
-    box.appendChild(
-      el(
-        "span",
-        "muted",
-        "暂不可用：后端没有返回压力数据。重载插件后再刷新；若是本地页面，确认 local_port 已启动。",
-      ),
-    );
-    return;
-  }
-  box.style.display = "";
-
-  const left = el("div", "pr-left");
-  left.appendChild(el("span", "pr-label", "上下文压力"));
-  left.appendChild(el("span", "pr-num", `${fmtTok(p.used)} / ${fmtTok(p.limit)}`));
-  left.appendChild(el("span", "muted", `（${(p.ratio * 100).toFixed(2)}%）`));
-
-  const track = el("div", "pr-track");
-  const fill = el("div", "pr-fill");
-  fill.style.width = `${Math.min(100, (p.used / p.limit) * 100)}%`;
-  track.appendChild(fill);
-  const mark = el("div", "pr-mark");
-  mark.style.left = `${Math.min(100, p.threshold * 100)}%`;
-  mark.title = `压缩阈值 ${(p.threshold * 100).toFixed(0)}%（${fmtTok(p.trigger_at)} tokens）`;
-  track.appendChild(mark);
-  track.title = p.source === "usage" ? "已用量取自模型返回的 prompt_tokens" : "已用量为估算值（缺 usage）";
-
-  const right = el("div", "pr-right");
-  right.appendChild(
-    el(
-      "span",
-      p.remaining > 0 ? "pr-remain" : "pr-hit",
-      p.remaining > 0 ? `距压缩还差 ${fmtTok(p.remaining)} tokens` : "已达压缩阈值",
-    ),
-  );
-  if (p.est_requests) {
-    right.appendChild(
-      el("span", "muted", ` · 约 ${p.est_requests} 轮（近几轮均值 ${fmtTok(p.avg_growth)}/轮）`),
-    );
-  }
-  const fc = state.forecast;
-  if (fc && fc.trigger_seq) {
-    right.appendChild(el("span", "pr-seq", ` · 预计当天第 ${fc.trigger_seq} 条`));
-  }
-
-  box.appendChild(left);
-  box.appendChild(track);
-  box.appendChild(right);
-}
-
-function forecastBlock() {
-  const f = state.forecast;
-  if (!f) return null;
-  const box = el("div", "fc");
-  box.appendChild(el("div", "fc-title", "下次压缩预演"));
-
-  const rows = [];
-  if (f.in_requests === null) {
-    rows.push(["触发", `最近几轮没有增长，无法估算第几次请求；阈值 ${fmtTok(f.trigger_at)}`]);
-  } else if (f.in_requests === 0) {
-    rows.push(["触发", `已达阈值 ${fmtTok(f.trigger_at)}，下一次请求就会压缩`]);
-  } else {
-    rows.push([
-      "触发",
-      `当天第 ${f.trigger_seq} 条请求 · 还差 ${fmtTok(f.remaining)} tokens（约 ${f.in_requests} 轮）`,
-    ]);
-  }
-
-  if (f.strategy === "truncate") {
-    rows.push([
-      "压掉",
-      `最旧的 1 轮 · ≈${f.remove_messages} 条 / ${fmtTok(f.remove_tokens)} tokens（截断，无摘要）`,
-    ]);
-    rows.push(["保留", `≈${f.keep_messages} 条 / ${fmtTok(f.keep_tokens)} tokens`]);
-  } else if (f.in_requests === null) {
-    // 没有增长就没有「届时」可言，只报阈值
-  } else {
-    rows.push(["届时", `≈${f.at_messages} 条消息 / ${fmtTok(f.at_message_tokens)} tokens`]);
-    rows.push(["压掉", `≈${f.remove_messages} 条 / ${fmtTok(f.remove_tokens)} tokens`]);
-    rows.push([
-      "保留",
-      `最近 ${Math.round((f.keep_ratio || 0) * 100)}% · ≈${f.keep_messages} 条 / ${fmtTok(f.keep_tokens)} tokens`,
-    ]);
-    rows.push([
-      "摘要",
-      `回填 ≈${fmtTok(f.summary_tokens)} tokens` +
-        `${f.summary_basis === "history" ? "（按历史比例）" : "（按 2% 估）"}` +
-        ` · 净回收 ≈${fmtTok(f.reclaim_tokens)}`,
-    ]);
-  }
-
-  if (f.in_requests !== null) {
-    const ratio = f.limit ? (f.after_tokens / f.limit) * 100 : 0;
-    rows.push(["之后", `≈${fmtTok(f.after_tokens)} / ${fmtTok(f.limit)}（${ratio.toFixed(1)}%）`]);
-  }
-
-  for (const [k, v] of rows) {
-    const row = el("div", "fc-row");
-    row.appendChild(el("span", "fc-k", k));
-    row.appendChild(el("span", "fc-v", v));
-    box.appendChild(row);
-  }
-
-  const note = [
-    f.strategy === "truncate" ? "策略：按轮次截断" : "策略：LLM 摘要",
-    f.source === "usage" ? "依据：真实 usage" : "依据：估算 tokens",
-  ];
-  if (f.avg_growth) note.push(`近 10 轮均值 ${fmtTok(f.avg_growth)}/轮`);
-  if (f.avg_new_msgs) note.push(`每轮 +${f.avg_new_msgs} 条消息`);
-  box.appendChild(el("div", "fc-note", note.join(" · ")));
-  return box;
-}
-
-function renderCutHistory() {
-  const box = $("#cut-history");
-  if (!box) return;
-  box.textContent = "";
-  const list = state.compactions || [];
-  box.appendChild(el("div", "ch-head", `压缩历史 · ${list.length} 次`));
-  const fc = forecastBlock();
-  if (fc) box.appendChild(fc);
-  if (!list.length) {
-    box.appendChild(el("div", "ch-empty", "这个会话还没发生过上下文压缩，上面是按当前增长估的预演。"));
-    return;
-  }
-  for (const c of [...list].reverse()) {
-    const row = el("button", "ch-row");
-    row.appendChild(el("span", "ch-tag", c.kind === "summary" ? "摘要" : "截断"));
-    row.appendChild(el("span", "ch-time", fmtTime(c.iso)));
-    row.appendChild(
-      el("span", "ch-stat", `#${c.n} · ${c.before}→${c.after} 条 · 回收 ${fmtTok(Math.max(0, c.saved))}`),
-    );
-    row.addEventListener("click", () => selectStep(c.id));
-    box.appendChild(row);
-  }
-}
-
 function renderNotice() {
   const box = $("#notice");
   if (!box) return;
@@ -702,13 +553,8 @@ async function loadList() {
   try {
     const res = await api("list", { date: state.date, umo: state.umo, limit: 400 });
     state.steps = res.steps || [];
-    state.pressure = res.pressure || null;
-    state.compactions = res.compactions || [];
-    state.forecast = res.forecast || null;
     state.notice = res.notice || null;
-    renderPressure();
     renderNotice();
-    renderCutHistory();
     renderTimeline();
     if (state.steps.length) {
       const keep = state.steps.find((s) => s.id === state.selected);

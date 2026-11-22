@@ -8,6 +8,9 @@
 
 灵感与产品形态对齐 DeepSeek Harness 的 [`dsh-context`](https://github.com/bowenliang123/dsh-context)，数据源换成了 AstrBot 的钩子，规模是精简版。
 
+> 压缩阈值、压缩历史、下次压缩预演已经拆到配套插件 **上下文信号**（`astrbot_plugin_ctx_signal`）。
+> 这里只保留每次请求自己的「✂ 压缩标记」和详情里的压缩卡片——那是这一轮的注解，不是历史面板。
+
 ## 两个入口，同一份页面
 
 | 入口 | 依赖 | 说明 |
@@ -88,16 +91,6 @@ AstrBot 的「检查更新」只认 `metadata.yaml` 里的 `repo` 字段——�
   agent 工具循环里一次对话会产生多条 —— 这正是“上下文过程”。
 - **右侧详情**：组成条 + 图例（八类固定配色）、与上一轮的 diff（总增减 + 分类徽标）、
   系统提示词全文、工具逐个开销、消息逐条展开、本次输入。
-- **压缩历史**：左侧时间线下方列出该会话所有压缩事件（发生时间、第几条请求、条数与回收 token），点一下跳到那一轮。
-- **下次压缩预演**：压缩历史上方一张卡片，把「还没发生」的那次压缩先算一遍：
-  按最近 10 轮的平均增长，给出 **当天第几条请求会触发**、届时大约多少条消息 / tokens、
-  会**保留**多少（AstrBot 的 `keep_recent_ratio`，默认 15% 原文）、**压掉**多少、
-  摘要回填多大、压缩后总量落在哪。策略与参数直接读 AstrBot 的
-  `agent_runner.config.compression`（摘要 / 截断、保留比例、摘要上限），不是写死的假设。
-  发生过真实压缩后，摘要规模改用历史比例，不再用 2% 的经验值。
-- **上下文压力条**：顶部一条进度条，显示 `已用 / 模型上限`、压缩阈值位置（默认 82%）、
-  以及 **距下次压缩还差多少 tokens**、按最近几轮平均增长估算的剩余轮数、**预计当天第几条请求触发**。
-  已用量优先取模型返回的 `prompt_tokens`（真实值），没有 usage 时退回估算。
 - **消息列表的两个开关**（偏好记在 localStorage，刷新后保持）：
   - **排序**：`旧 → 新`（模型读取顺序）或 `新 → 旧`（最近发生的在最上面）；
   - **显示**：`全部` 或 `仅变更` —— 只列相对上一次请求**新增**（绿标 `新增`）和
@@ -115,7 +108,7 @@ AstrBot 的「检查更新」只认 `metadata.yaml` 里的 `repo` 字段——�
 | 路由 | 说明 |
 |---|---|
 | `GET /api/sessions?date=YYYY-MM-DD` | 当天会话及请求数 |
-| `GET /api/list?date=&umo=&limit=` | 时间线数据（含 breakdown、pressure、compactions、forecast） |
+| `GET /api/list?date=&umo=&limit=` | 时间线数据（含 breakdown、notice） |
 | `GET /api/detail?date=&seq=&full=1` | 单条明细：contexts、msg_items、tool_items、prev |
 
 ## 记录结构
