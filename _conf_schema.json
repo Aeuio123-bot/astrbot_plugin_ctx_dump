@@ -21,7 +21,7 @@
   },
   "compress_threshold": {
     "type": "float",
-    "description": "上下文压缩触发阈值（AstrBot 默认 0.82，即用到模型上限的 82% 时压缩）。仅用于计算「距离下次压缩」，不影响 AstrBot 实际行为",
+    "description": "上下文压缩触发阈值（AstrBot 默认 0.82，即用到模型上限的 82% 时压缩）。用于压力条位置与「下次压缩预演」的计算，不影响 AstrBot 实际行为",
     "default": 0.82
   },
   "local_server": {

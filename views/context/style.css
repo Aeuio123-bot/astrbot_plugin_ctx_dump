@@ -361,6 +361,38 @@ main {
 .ch-time { color: var(--muted); font-variant-numeric: tabular-nums; }
 .ch-stat { color: var(--fg); font-variant-numeric: tabular-nums; }
 
+/* 下次压缩预演 */
+.fc {
+  margin: 2px 4px 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.fc-title {
+  color: #f43f5e;
+  font-size: 11px;
+  letter-spacing: .02em;
+  padding-bottom: 4px;
+}
+.fc-row { display: flex; gap: 8px; align-items: baseline; }
+.fc-k {
+  flex: 0 0 30px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.fc-v { color: var(--fg); font-variant-numeric: tabular-nums; }
+.fc-note {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px dashed var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+.pr-seq { color: var(--accent); font-variant-numeric: tabular-nums; }
+
 /* 消息注入时间线 */
 .tag-inj {
   background: rgba(107, 140, 255, .14);
