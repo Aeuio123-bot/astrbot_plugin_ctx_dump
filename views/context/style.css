@@ -244,6 +244,19 @@ main {
 .tag-new { background: rgba(34, 197, 94, .16); color: #22c55e; }
 .tag-chg { background: rgba(245, 158, 11, .16); color: #f59e0b; }
 .tag-del { background: rgba(239, 68, 68, .16); color: #ef4444; }
+.tag-cut { background: rgba(244, 63, 94, .16); color: #f43f5e; }
+
+.card-cut { border-color: rgba(244, 63, 94, .45); }
+.cut-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.cut-before { color: var(--muted); }
+.cut-arrow { color: #f43f5e; }
+.cut-after { font-weight: 600; }
 
 .msg-new > summary { box-shadow: inset 3px 0 0 #22c55e; }
 .msg-chg > summary { box-shadow: inset 3px 0 0 #f59e0b; }

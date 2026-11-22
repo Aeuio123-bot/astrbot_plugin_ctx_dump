@@ -5,7 +5,7 @@ desc: >-
   JSONL，并在插件视图或自带本地页面里查看上下文由什么组成、每一轮怎么变化。
   支持 token 估算分布、逐轮 diff、消息原文展开。
 short_desc: 上下文落盘 + 时间线查看
-version: 0.4.1
+version: 0.4.2
 author: Aeuio123-bot
 repo: https://github.com/Aeuio123-bot/astrbot_plugin_ctx_dump
 logo: logo.png

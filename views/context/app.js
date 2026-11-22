@@ -60,6 +60,7 @@ const CATS = [
   ["tool_calls", "工具调用", "#ef4444"],
   ["tool_result", "工具结果", "#14b8a6"],
   ["reasoning", "推理", "#a855f7"],
+  ["summary", "压缩摘要", "#f43f5e"],
   ["prompt", "本次输入", "#f472b6"],
 ];
 const CAT_LABEL = Object.fromEntries(CATS.map(([k, label]) => [k, label]));
@@ -173,6 +174,16 @@ function renderTimeline() {
     head.appendChild(el("span", "seq", `#${step.n ?? step.seq}`));
     head.appendChild(el("span", "time", fmtTime(step.iso)));
     head.appendChild(el("span", "spacer"));
+    if (step.compress) {
+      const c = step.compress;
+      const tag = el(
+        "span",
+        "tag tag-cut",
+        `✂ ${c.kind === "summary" ? "摘要压缩" : "截断"} -${fmtTok(Math.max(0, c.saved))}`,
+      );
+      tag.title = `上下文 ${c.before} 条 → ${c.after} 条，估算 ${fmtTok(c.before_tokens)} → ${fmtTok(c.after_tokens)} tokens`;
+      head.appendChild(tag);
+    }
     head.appendChild(el("span", "ctx", `${step.n_contexts} 条`));
     head.appendChild(el("span", "tok", fmtTok(step.tokens)));
     row.appendChild(head);
@@ -328,6 +339,7 @@ function buildMessageSection(step) {
     const s = document.createElement("summary");
     s.appendChild(el("span", "idx", `#${idx + 1}`));
     s.appendChild(el("span", "role role-" + role, role));
+    if ((items[idx] || {}).summary) s.appendChild(el("span", "tag tag-cut", "摘要"));
     if (msgState === "new") s.appendChild(el("span", "tag tag-new", "新增"));
     else if (msgState === "changed") s.appendChild(el("span", "tag tag-chg", "改动"));
     s.appendChild(el("span", "preview", (raw || "").replace(/\s+/g, " ").slice(0, 80)));
@@ -392,6 +404,25 @@ function renderDetail(step) {
   deltaCard.appendChild(el("div", "card-title", "与上一轮相比"));
   deltaCard.appendChild(renderDelta(step));
   box.appendChild(deltaCard);
+
+  // 上下文压缩
+  if (step.compress) {
+    const c = step.compress;
+    const card = el("div", "card card-cut");
+    card.appendChild(el("div", "card-title", `上下文压缩 · ${c.kind === "summary" ? "LLM 摘要" : "按轮次截断"}`));
+    const line = el("div", "cut-line");
+    line.appendChild(el("span", "cut-before", `${c.before} 条 / ≈${fmtTok(c.before_tokens)}`));
+    line.appendChild(el("span", "cut-arrow", "→"));
+    line.appendChild(el("span", "cut-after", `${c.after} 条 / ≈${fmtTok(c.after_tokens)}`));
+    line.appendChild(el("span", "badge down", `回收 ≈${fmtTok(Math.max(0, c.saved))} tokens`));
+    card.appendChild(line);
+    const note = el("div", "muted");
+    note.textContent =
+      `移除 ${c.removed} 条消息` +
+      (c.summary_tokens ? `，其中压缩摘要占 ≈${fmtTok(c.summary_tokens)} tokens（计入「压缩摘要」分类）` : "");
+    card.appendChild(note);
+    box.appendChild(card);
+  }
 
   // 系统提示词
   if (step.system_prompt) {

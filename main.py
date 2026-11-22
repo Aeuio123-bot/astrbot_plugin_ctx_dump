@@ -39,7 +39,16 @@ _SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 
-CATS = ("system", "tools", "user", "assistant", "tool_calls", "tool_result", "reasoning")
+CATS = (
+    "system",
+    "tools",
+    "user",
+    "assistant",
+    "tool_calls",
+    "tool_result",
+    "reasoning",
+    "summary",
+)
 
 
 def _iso_now() -> str:
@@ -134,6 +143,17 @@ def _msg_text(msg: Any) -> str:
     return "" if content is None else json.dumps(content, ensure_ascii=False)
 
 
+SUMMARY_PREFIX = "Our previous history conversation summary:"
+SUMMARY_ACK = "Acknowledged the summary of our previous conversation history."
+
+
+def _is_summary_msg(msg: Any) -> bool:
+    """AstrBot 的 LLM 摘要压缩会把历史换成固定前缀的一条 user 消息。"""
+    if not isinstance(msg, dict):
+        return False
+    return _msg_text(msg).lstrip().startswith(SUMMARY_PREFIX)
+
+
 def _breakdown(record: dict) -> dict:
     b = dict.fromkeys(CATS, 0)
     b["system"] = estimate_tokens(record.get("system_prompt") or "")
@@ -156,7 +176,10 @@ def _breakdown(record: dict) -> dict:
             b["tool_calls"] += estimate_tokens(
                 json.dumps(msg["tool_calls"], ensure_ascii=False)
             )
-        if role == "tool":
+        if _is_summary_msg(msg) or text.strip() == SUMMARY_ACK:
+            # 压缩产出的摘要单独计数，不混进「用户消息」
+            b["summary"] += n
+        elif role == "tool":
             b["tool_result"] += n
         elif role == "assistant":
             b["assistant"] += n
@@ -168,6 +191,41 @@ def _breakdown(record: dict) -> dict:
     b["prompt"] = estimate_tokens(record.get("prompt") or "")
     b["total"] = sum(b[k] for k in CATS) + b["prompt"]
     return b
+
+
+def _compaction(prev: dict | None, cur: dict) -> dict | None:
+    """判断 cur 相对 prev 是否发生了上下文压缩，并算出回收了多少。
+
+    AstrBot 两种压缩：
+      - LLMSummaryCompressor：历史被替换成一条 "Our previous history conversation summary: ..."；
+      - TruncateByTurnsCompressor：直接按轮次砍掉旧消息，没有摘要。
+    两者都会让 contexts 条数下降，这里按「是否有摘要消息」区分。
+    """
+    if not prev:
+        return None
+    before = int(prev.get("n_contexts") or 0)
+    after = int(cur.get("n_contexts") or 0)
+    if before <= after:
+        return None
+
+    has_summary = any(_is_summary_msg(m) for m in (cur.get("contexts") or []))
+    prev_has_summary = any(_is_summary_msg(m) for m in (prev.get("contexts") or []))
+    kind = "summary" if has_summary and not prev_has_summary else "truncate"
+    removed = before - after
+    if removed < 2 and kind != "summary":
+        return None  # 一两条的抖动不算压缩
+
+    pb, cb = _breakdown(prev), _breakdown(cur)
+    return {
+        "kind": kind,
+        "before": before,
+        "after": after,
+        "removed": removed,
+        "before_tokens": pb["total"],
+        "after_tokens": cb["total"],
+        "saved": pb["total"] - cb["total"],
+        "summary_tokens": cb["summary"],
+    }
 
 
 def _summary(record: dict) -> dict:
@@ -235,12 +293,17 @@ def build_list(records: list[dict], umo: str, limit: int) -> dict:
     # 按时间排序并给当天每条请求一个稳定序号 n（与 seq 无关，重载后不会重复）
     reqs.sort(key=lambda r: (float(r.get("ts") or 0), r.get("seq") or 0))
     steps = []
+    prev_by_umo: dict[str, dict] = {}
     for n, rec in enumerate(reqs, start=1):
+        comp = _compaction(prev_by_umo.get(rec.get("umo") or ""), rec)
+        prev_by_umo[rec.get("umo") or ""] = rec
         if umo and rec.get("umo") != umo:
             continue
         s = _summary(rec)
         s["n"] = n
         s["id"] = record_id(rec)
+        if comp:
+            s["compress"] = comp
         steps.append(s)
     total = len(steps)
     if limit and total > limit:
@@ -286,6 +349,7 @@ def build_detail(records: list[dict], rid: str, full: bool) -> dict | None:
     detail["contexts"] = ctx_out
     detail["breakdown"] = _breakdown(target)
     detail["prev"] = _summary(prev) if prev else None
+    detail["compress"] = _compaction(prev, target)
     detail["id"] = record_id(target)
     # 当天序号 n（与时间线一致），只用于展示
     ordered = sorted(
@@ -322,6 +386,7 @@ def build_detail(records: list[dict], rid: str, full: bool) -> dict | None:
                 "role": m.get("role") or "user",
                 "tokens": estimate_tokens(_msg_text(m)),
                 "state": state,
+                "summary": _is_summary_msg(m),
             }
         )
     detail["msg_items"] = msg_items
