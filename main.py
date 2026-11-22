@@ -241,6 +241,96 @@ def _compaction(prev: dict | None, cur: dict) -> dict | None:
     }
 
 
+def _usage_prompt_tokens(records: list[dict], trace_id: str) -> int | None:
+    """从响应记录里取模型实际报告的 prompt_tokens（比估算准）。"""
+    if not trace_id:
+        return None
+    for rec in records:
+        if rec.get("kind") != "response" or rec.get("trace_id") != trace_id:
+            continue
+        usage = rec.get("usage") or {}
+        v = usage.get("prompt_tokens")
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return None
+
+
+def build_pressure(
+    records: list[dict], umo: str, limit_tokens: int, threshold: float = 0.82
+) -> dict | None:
+    """当前会话的上下文压力：已用多少、阈值在哪、还差多少到下一次压缩。
+
+    AstrBot 的压缩触发条件是 usage_rate > threshold（默认 0.82），
+    usage_rate = 当前 tokens / 模型 max_context_tokens。
+    """
+    reqs = [r for r in records if r.get("kind") != "response"]
+    if umo:
+        reqs = [r for r in reqs if r.get("umo") == umo]
+    reqs.sort(key=lambda r: (float(r.get("ts") or 0), r.get("seq") or 0))
+    if not reqs:
+        return None
+
+    last = reqs[-1]
+    used = _usage_prompt_tokens(records, last.get("trace_id") or "")
+    source = "usage"
+    if used is None:
+        used = _breakdown(last)["total"]
+        source = "estimate"
+
+    limit = int(limit_tokens or 0) or 128000
+    trigger = int(limit * threshold)
+
+    # 最近几轮的平均增长，用来估「还要聊多少轮」
+    growths = []
+    for prev, cur in zip(reqs, reqs[1:]):
+        d = _breakdown(cur)["total"] - _breakdown(prev)["total"]
+        if d > 0:
+            growths.append(d)
+    avg_growth = int(sum(growths) / len(growths)) if growths else 0
+
+    remaining = max(0, trigger - used)
+    return {
+        "limit": limit,
+        "threshold": threshold,
+        "trigger_at": trigger,
+        "used": used,
+        "ratio": round(used / limit, 4) if limit else 0,
+        "trigger_ratio": threshold,
+        "remaining": remaining,
+        "remaining_ratio": round(remaining / limit, 4) if limit else 0,
+        "avg_growth": avg_growth,
+        "est_requests": int(remaining / avg_growth) if avg_growth > 0 else None,
+        "source": source,
+        "n": len(reqs),
+    }
+
+
+def build_compactions(records: list[dict], umo: str) -> list[dict]:
+    """列出该会话历史上所有压缩事件。"""
+    reqs = [r for r in records if r.get("kind") != "response"]
+    reqs.sort(key=lambda r: (float(r.get("ts") or 0), r.get("seq") or 0))
+    out = []
+    prev_by_umo: dict[str, dict] = {}
+    for n, rec in enumerate(reqs, start=1):
+        key = rec.get("umo") or ""
+        comp = _compaction(prev_by_umo.get(key), rec)
+        prev_by_umo[key] = rec
+        if not comp:
+            continue
+        if umo and key != umo:
+            continue
+        out.append(
+            {
+                "id": record_id(rec),
+                "n": n,
+                "iso": rec.get("iso"),
+                "umo": key,
+                **comp,
+            }
+        )
+    return out
+
+
 def _summary(record: dict) -> dict:
     b = _breakdown(record)
     return {
@@ -447,6 +537,9 @@ class CtxDumpPlugin(Star):
         self.keep_latest: bool = bool(self.cfg.get("keep_latest", True))
         self.retention_days: int = int(self.cfg.get("retention_days", 7) or 0)
         self.redact: bool = bool(self.cfg.get("redact", True))
+        # AstrBot 的压缩阈值固定 0.82（LLMSummaryCompressor/TruncateByTurnsCompressor 的默认值），
+        # 若你改过后端行为，可在这里同步
+        self.compress_threshold: float = float(self.cfg.get("compress_threshold", 0.82) or 0.82)
         self.local_server: bool = bool(self.cfg.get("local_server", True))
         self.local_bind: str = str(self.cfg.get("local_bind") or "127.0.0.1")
         self.local_port: int = int(self.cfg.get("local_port", 6299) or 0)
@@ -547,14 +640,22 @@ class CtxDumpPlugin(Star):
                         if name == "sessions":
                             payload = {"date": date, **build_sessions(records)}
                         elif name == "list":
+                            umo_q = query.get("umo", "")
                             payload = {
                                 "date": date,
                                 **build_list(
                                     records,
-                                    query.get("umo", ""),
+                                    umo_q,
                                     int(query.get("limit", 400) or 400),
                                 ),
                             }
+                            payload["pressure"] = build_pressure(
+                                records,
+                                umo_q,
+                                plugin._context_limit(umo_q),
+                                plugin.compress_threshold,
+                            )
+                            payload["compactions"] = build_compactions(records, umo_q)
                         elif name == "detail":
                             rid = str(query.get("id", "") or "")
                             if not rid:
@@ -754,7 +855,26 @@ class CtxDumpPlugin(Star):
         umo = request.query.get("umo", "")
         limit = request.query.get("limit", 400, type=int)
         records = await asyncio.to_thread(read_day, self.dir, date)
-        return json_response({"date": date, **build_list(records, umo, limit)})
+        payload = {"date": date, **build_list(records, umo, limit)}
+        payload["pressure"] = build_pressure(
+            records, umo, self._context_limit(umo), self.compress_threshold
+        )
+        payload["compactions"] = build_compactions(records, umo)
+        return json_response(payload)
+
+    def _context_limit(self, umo: str = "") -> int:
+        """当前会话所用模型的上限 tokens（AstrBot 用它做压缩分母）。"""
+        try:
+            provider = self.context.get_using_provider(umo or None)
+        except Exception:
+            provider = None
+        limit = 0
+        if provider is not None:
+            try:
+                limit = int(provider.provider_config.get("max_context_tokens") or 0)
+            except Exception:
+                limit = 0
+        return limit or 128000
 
     async def api_detail(self):
         date = request.query.get("date", _today())

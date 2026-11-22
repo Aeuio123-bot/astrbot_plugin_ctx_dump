@@ -72,6 +72,8 @@ const state = {
   steps: [],
   selected: null,
   detail: null,
+  pressure: null,
+  compactions: [],
   // 消息列表 / 时间线的视图偏好；沙箱 iframe 里 localStorage 不可用，自动退化成内存
   tlOrder: storage.getItem("ctxdump.tlOrder") || "desc",
   msgsOrder: storage.getItem("ctxdump.msgsOrder") || "asc",
@@ -499,8 +501,75 @@ async function selectStep(id) {
   }
 }
 
-async function loadSessions() {
-  try {
+// ---------------------------------------------------------------- 压力 / 压缩历史
+function renderPressure() {
+  const box = $("#pressure");
+  if (!box) return;
+  box.textContent = "";
+  const p = state.pressure;
+  if (!p) {
+    box.style.display = "none";
+    return;
+  }
+  box.style.display = "";
+
+  const left = el("div", "pr-left");
+  left.appendChild(el("span", "pr-label", "上下文压力"));
+  left.appendChild(el("span", "pr-num", `${fmtTok(p.used)} / ${fmtTok(p.limit)}`));
+  left.appendChild(el("span", "muted", `（${(p.ratio * 100).toFixed(2)}%）`));
+
+  const track = el("div", "pr-track");
+  const fill = el("div", "pr-fill");
+  fill.style.width = `${Math.min(100, (p.used / p.limit) * 100)}%`;
+  track.appendChild(fill);
+  const mark = el("div", "pr-mark");
+  mark.style.left = `${Math.min(100, p.threshold * 100)}%`;
+  mark.title = `压缩阈值 ${(p.threshold * 100).toFixed(0)}%（${fmtTok(p.trigger_at)} tokens）`;
+  track.appendChild(mark);
+  track.title = p.source === "usage" ? "已用量取自模型返回的 prompt_tokens" : "已用量为估算值（缺 usage）";
+
+  const right = el("div", "pr-right");
+  right.appendChild(
+    el(
+      "span",
+      p.remaining > 0 ? "pr-remain" : "pr-hit",
+      p.remaining > 0 ? `距压缩还差 ${fmtTok(p.remaining)} tokens` : "已达压缩阈值",
+    ),
+  );
+  if (p.est_requests) {
+    right.appendChild(
+      el("span", "muted", ` · 约 ${p.est_requests} 轮（近几轮均值 ${fmtTok(p.avg_growth)}/轮）`),
+    );
+  }
+
+  box.appendChild(left);
+  box.appendChild(track);
+  box.appendChild(right);
+}
+
+function renderCutHistory() {
+  const box = $("#cut-history");
+  if (!box) return;
+  box.textContent = "";
+  const list = state.compactions || [];
+  box.appendChild(el("div", "ch-head", `压缩历史 · ${list.length} 次`));
+  if (!list.length) {
+    box.appendChild(el("div", "ch-empty", "这个会话还没发生过上下文压缩。"));
+    return;
+  }
+  for (const c of [...list].reverse()) {
+    const row = el("button", "ch-row");
+    row.appendChild(el("span", "ch-tag", c.kind === "summary" ? "摘要" : "截断"));
+    row.appendChild(el("span", "ch-time", fmtTime(c.iso)));
+    row.appendChild(
+      el("span", "ch-stat", `#${c.n} · ${c.before}→${c.after} 条 · 回收 ${fmtTok(Math.max(0, c.saved))}`),
+    );
+    row.addEventListener("click", () => selectStep(c.id));
+    box.appendChild(row);
+  }
+}
+
+async function loadSessions() {  try {
     const res = await api("sessions", { date: state.date });
     const sel = $("#sessions");
     sel.textContent = "";
@@ -521,6 +590,10 @@ async function loadList() {
   try {
     const res = await api("list", { date: state.date, umo: state.umo, limit: 400 });
     state.steps = res.steps || [];
+    state.pressure = res.pressure || null;
+    state.compactions = res.compactions || [];
+    renderPressure();
+    renderCutHistory();
     renderTimeline();
     if (state.steps.length) {
       const keep = state.steps.find((s) => s.id === state.selected);
