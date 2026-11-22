@@ -217,7 +217,15 @@ function renderDelta(step) {
     const chip = el("span", "chip " + (d > 0 ? "up" : "down"));
     chip.style.borderColor = color;
     chip.appendChild(el("span", "dot", "●")).style.color = color;
-    chip.appendChild(el("span", null, `${CAT_LABEL[key]} ${d > 0 ? "+" : ""}${fmtTok(d)}`));
+    if (key === "prompt") {
+      // 本次输入是「这一轮的用户消息」，不是累积量：它的正负只说明这轮输入比上轮长/短，
+      // 不代表上下文变化。所以同时给出绝对值，避免误读。
+      chip.appendChild(el("span", null, `本次输入 ${fmtTok(cur.prompt)}（较上轮 ${d > 0 ? "+" : ""}${fmtTok(d)}）`));
+      chip.title = "本轮用户输入的 token；括号里是它比上一轮输入长/短多少，与上下文增长无关";
+    } else {
+      chip.appendChild(el("span", null, `${CAT_LABEL[key]} ${d > 0 ? "+" : ""}${fmtTok(d)}`));
+      chip.title = `相对上一轮的 ${CAT_LABEL[key]} 变化`;
+    }
     chips.appendChild(chip);
   }
   if (chips.childElementCount) box.appendChild(chips);
