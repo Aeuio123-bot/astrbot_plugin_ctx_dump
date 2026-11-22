@@ -487,6 +487,15 @@ def build_detail(records: list[dict], rid: str, full: bool) -> dict | None:
     # 逐条消息：估算 token + 与上一轮的关系（first / new / changed / same）
     # AstrBot 通常把新消息追加在末尾，所以按下标对齐；上下文被压缩时可能整体错位，
     # 这种情况会被标成 changed，属于可接受的近似。
+    # inj_at：这条消息是在第几次请求时进入上下文的（上下文是只追加的，按下标就能回推）
+    session_reqs = [r for r in ordered if r.get("umo") == target.get("umo")]
+    inj_map: dict[int, dict] = {}
+    for n_idx, r in enumerate(session_reqs, start=1):
+        cnt = len(r.get("contexts") or [])
+        for i in range(cnt):
+            if i not in inj_map:
+                inj_map[i] = {"n": n_idx, "iso": r.get("iso")}
+
     prev_ctx = (prev.get("contexts") or []) if prev else []
     msg_items = []
     n_new = n_changed = 0
@@ -503,6 +512,7 @@ def build_detail(records: list[dict], rid: str, full: bool) -> dict | None:
             n_changed += 1
         else:
             state = "same"
+        inj = inj_map.get(i) or {}
         msg_items.append(
             {
                 "i": i,
@@ -510,6 +520,8 @@ def build_detail(records: list[dict], rid: str, full: bool) -> dict | None:
                 "tokens": estimate_tokens(_msg_text(m)),
                 "state": state,
                 "summary": _is_summary_msg(m),
+                "inj_at": inj.get("n"),
+                "inj_iso": inj.get("iso"),
             }
         )
     detail["msg_items"] = msg_items
@@ -547,10 +559,16 @@ class CtxDumpPlugin(Star):
         # 6185 是 AstrBot dashboard，6199 是 OneBot(aiocqhttp) 反向 WS 端口。
         # 0.4.0–0.4.3 默认用了 6199，会把 OneBot 的 /ws 连接抢到插件的 HTTP 服务上（404），
         # 导致 NapCat 一直重连。这里强制避开，并在端口被占用时直接不启动。
+        self.port_notice: str | None = None
         if self.local_port in _RESERVED_PORTS:
-            logger.warning(
-                f"[ctx_dump] local_port={self.local_port} 与 AstrBot/OneBot 端口冲突，改用 {_DEFAULT_LOCAL_PORT}"
+            self.port_notice = (
+                f"端口冲突：配置的 local_port={self.local_port} 是保留端口。"
+                f"甲＝插件本地页面（本插件），乙＝AstrBot 自身服务"
+                f"（{self.local_port} = {'dashboard' if self.local_port == 6185 else 'OneBot 反向 WebSocket'}）。"
+                f"两者抢同一个端口会让乙方的连接 404 或直接失败，已自动改用 {_DEFAULT_LOCAL_PORT}。"
+                "如需固定端口，请在插件配置里填一个 1024 以上且未被占用的端口。"
             )
+            logger.error("[ctx_dump] " + self.port_notice)
             self.local_port = _DEFAULT_LOCAL_PORT
 
         try:
@@ -656,6 +674,7 @@ class CtxDumpPlugin(Star):
                                 plugin.compress_threshold,
                             )
                             payload["compactions"] = build_compactions(records, umo_q)
+                            payload["notice"] = plugin.port_notice
                         elif name == "detail":
                             rid = str(query.get("id", "") or "")
                             if not rid:
@@ -691,19 +710,23 @@ class CtxDumpPlugin(Star):
                     return self._json({"status": "error", "message": str(exc)}, 500)
 
         if _port_in_use(self.local_bind, self.local_port):
-            logger.warning(
-                f"[ctx_dump] 端口 {self.local_port} 已被其他服务占用，本地页面不启动（不影响插件视图和落盘）。"
-                "可在插件配置里把 local_port 换成别的端口。"
+            self.port_notice = (
+                f"端口冲突：{self.local_bind}:{self.local_port} 已被其他程序占用，"
+                "甲＝插件本地页面（本插件，未启动），乙＝占用该端口的其他服务（保持不动，不受影响）。"
+                "插件视图与落盘仍然正常；要恢复本地页面，请把 local_port 改成别的空闲端口，或关掉占用它的程序。"
             )
+            logger.error("[ctx_dump] " + self.port_notice)
             return
 
         try:
             httpd = ThreadingHTTPServer((self.local_bind, self.local_port), Handler)
             httpd.daemon_threads = True
         except OSError as exc:
-            logger.warning(
-                f"[ctx_dump] 本地页面启动失败（端口 {self.local_port} 可能被占用）: {exc}"
+            self.port_notice = (
+                f"本地页面启动失败：绑定 {self.local_bind}:{self.local_port} 出错（{exc}）。"
+                "插件视图与落盘不受影响；换个 local_port 再试。"
             )
+            logger.error("[ctx_dump] " + self.port_notice)
             return
 
         thread = threading.Thread(
@@ -860,6 +883,7 @@ class CtxDumpPlugin(Star):
             records, umo, self._context_limit(umo), self.compress_threshold
         )
         payload["compactions"] = build_compactions(records, umo)
+        payload["notice"] = self.port_notice
         return json_response(payload)
 
     def _context_limit(self, umo: str = "") -> int:
@@ -952,6 +976,8 @@ class CtxDumpPlugin(Star):
         lines = [f"上下文落盘目录：{self.dir}"]
         if self._httpd:
             lines.append(f"本地页面：http://{self.local_bind}:{self.local_port}")
+        if self.port_notice:
+            lines.append("⚠ " + self.port_notice)
         yield event.plain_result("\n".join(lines))
 
     @filter.command("ctxdump_purge")

@@ -66,6 +66,14 @@ const CATS = [
 const CAT_LABEL = Object.fromEntries(CATS.map(([k, label]) => [k, label]));
 const CAT_COLOR = Object.fromEntries(CATS.map(([k, , c]) => [k, c]));
 
+// 消息角色图标，用来把消息列表读成一条「注入时间线」
+const ROLE_ICON = {
+  system: "⚙",
+  user: "👤",
+  assistant: "🤖",
+  tool: "🔧",
+};
+
 const state = {
   date: "",
   umo: "",
@@ -74,6 +82,7 @@ const state = {
   detail: null,
   pressure: null,
   compactions: [],
+  notice: null,
   // 消息列表 / 时间线的视图偏好；沙箱 iframe 里 localStorage 不可用，自动退化成内存
   tlOrder: storage.getItem("ctxdump.tlOrder") || "desc",
   msgsOrder: storage.getItem("ctxdump.msgsOrder") || "asc",
@@ -321,6 +330,12 @@ function buildMessageSection(step) {
     ),
   );
   sec.appendChild(bar);
+  const hint = el(
+    "div",
+    "msgs-hint",
+    "每行的「#n 注入」= 这条消息在第 n 次请求时进入上下文；⚙ 系统 · 👤 用户 · 🤖 助手 · 🔧 工具",
+  );
+  sec.appendChild(hint);
 
   const list = el("div", "msgs");
   let order = contexts.map((_, i) => i);
@@ -341,8 +356,9 @@ function buildMessageSection(step) {
   for (const idx of order) {
     const msg = contexts[idx] || {};
     const role = msg.role || "user";
-    const tokens = (items[idx] || {}).tokens || 0;
-    const msgState = (items[idx] || {}).state || "same";
+    const item = items[idx] || {};
+    const tokens = item.tokens || 0;
+    const msgState = item.state || "same";
     // 后端已把 content 里的多模态分段抽成 text，优先用它，避免展示 JSON 噪音
     const raw =
       typeof msg.text === "string"
@@ -352,13 +368,22 @@ function buildMessageSection(step) {
           : JSON.stringify(msg.content, null, 2);
 
     const d = document.createElement("details");
-    d.className = "msg" + (msgState === "new" ? " msg-new" : msgState === "changed" ? " msg-chg" : "");
+    d.className =
+      "msg" + (msgState === "new" ? " msg-new" : msgState === "changed" ? " msg-chg" : "");
     const s = document.createElement("summary");
+    s.appendChild(el("span", "micon", ROLE_ICON[role] || "•"));
     s.appendChild(el("span", "idx", `#${idx + 1}`));
     s.appendChild(el("span", "role role-" + role, role));
-    if ((items[idx] || {}).summary) s.appendChild(el("span", "tag tag-cut", "摘要"));
+    if (item.summary) s.appendChild(el("span", "tag tag-cut", "摘要"));
     if (msgState === "new") s.appendChild(el("span", "tag tag-new", "新增"));
     else if (msgState === "changed") s.appendChild(el("span", "tag tag-chg", "改动"));
+    if (item.inj_at) {
+      const inj = el("span", "tag tag-inj", `#${item.inj_at} 注入`);
+      inj.title = item.inj_iso
+        ? `这条消息在第 ${item.inj_at} 次请求（${item.inj_iso}）进入上下文`
+        : `这条消息在第 ${item.inj_at} 次请求进入上下文`;
+      s.appendChild(inj);
+    }
     s.appendChild(el("span", "preview", (raw || "").replace(/\s+/g, " ").slice(0, 80)));
     s.appendChild(el("span", "spacer"));
     s.appendChild(el("span", "muted", `≈${fmtTok(tokens)}`));
@@ -569,6 +594,21 @@ function renderCutHistory() {
   }
 }
 
+function renderNotice() {
+  const box = $("#notice");
+  if (!box) return;
+  const msg = state.notice;
+  if (!msg) {
+    box.hidden = true;
+    box.textContent = "";
+    return;
+  }
+  box.hidden = false;
+  box.textContent = "";
+  box.appendChild(el("span", "notice-icon", "⚠"));
+  box.appendChild(el("span", "notice-text", msg));
+}
+
 async function loadSessions() {  try {
     const res = await api("sessions", { date: state.date });
     const sel = $("#sessions");
@@ -592,7 +632,9 @@ async function loadList() {
     state.steps = res.steps || [];
     state.pressure = res.pressure || null;
     state.compactions = res.compactions || [];
+    state.notice = res.notice || null;
     renderPressure();
+    renderNotice();
     renderCutHistory();
     renderTimeline();
     if (state.steps.length) {

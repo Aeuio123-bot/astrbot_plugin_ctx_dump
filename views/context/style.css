@@ -360,3 +360,32 @@ main {
 }
 .ch-time { color: var(--muted); font-variant-numeric: tabular-nums; }
 .ch-stat { color: var(--fg); font-variant-numeric: tabular-nums; }
+
+/* 消息注入时间线 */
+.micon { width: 14px; text-align: center; font-size: 11px; opacity: .85; }
+.tag-inj {
+  background: rgba(107, 140, 255, .14);
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.msgs-hint {
+  padding: 5px 12px 7px;
+  color: var(--muted);
+  font-size: 11px;
+  border-top: 1px solid var(--line);
+}
+
+/* 端口/启动异常提示 */
+.notice {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 16px;
+  background: rgba(245, 158, 11, .12);
+  border-bottom: 1px solid rgba(245, 158, 11, .35);
+  color: #d97706;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.notice[hidden] { display: none; }
+.notice-icon { flex: 0 0 auto; }
