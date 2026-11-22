@@ -32,6 +32,38 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js"></script>
+    <script>
+      // 兜底诊断：插件视图跑在 sandbox="allow-scripts"（无 allow-same-origin）的 iframe 里，
+      // 任何模块级异常都会让页面永远停在「加载中」。这里先挂错误监听，把原因显示出来。
+      window.__ctxDumpBooted = false;
+      window.__ctxDumpFail = function (msg) {
+        if (window.__ctxDumpBooted) return;
+        var box = document.getElementById("timeline");
+        if (!box) return;
+        box.textContent = "";
+        var d = document.createElement("div");
+        d.className = "empty";
+        d.textContent = msg;
+        box.appendChild(d);
+      };
+      window.addEventListener("error", function (e) {
+        var where = e.filename ? " @ " + String(e.filename).split("/").pop() : "";
+        window.__ctxDumpFail("脚本错误：" + (e.message || "unknown") + where);
+      });
+      window.addEventListener("unhandledrejection", function (e) {
+        var r = e.reason;
+        window.__ctxDumpFail("未处理的异常：" + ((r && r.message) || r));
+      });
+      setTimeout(function () {
+        window.__ctxDumpFail(
+          "仍在加载：bridge " +
+            (window.AstrBotPluginView ? "已注入" : "未注入") +
+            "，请查看浏览器控制台",
+        );
+      }, 8000);
+    </script>
+    <!-- 用普通脚本而不是 module：sandbox iframe 里 module 的跨源 fetch 更脆弱，
+         普通脚本是 no-cors 语义，少一类加载失败。app.js 本身没有 import/export。 -->
+    <script src="./app.js" defer></script>
   </body>
 </html>

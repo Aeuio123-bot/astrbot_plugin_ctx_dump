@@ -27,6 +27,31 @@ function localBridge() {
 
 const bridge = window.AstrBotPluginView || localBridge();
 
+// AstrBot 的插件视图 iframe 带 sandbox="allow-scripts allow-forms allow-downloads"，
+// 没有 allow-same-origin，所以 origin 是 opaque 的：访问 localStorage 会抛 SecurityError。
+// 之前把 localStorage 直接写在模块顶层，异常导致整个模块不执行，页面就永远停在「加载中」。
+const storage = (() => {
+  try {
+    const probe = "__ctxdump_probe__";
+    window.localStorage.setItem(probe, "1");
+    window.localStorage.removeItem(probe);
+    return window.localStorage;
+  } catch {
+    const mem = new Map();
+    return {
+      getItem: (key) => (mem.has(key) ? mem.get(key) : null),
+      setItem: (key, value) => mem.set(key, String(value)),
+    };
+  }
+})();
+
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} 超时（${ms}ms）`)), ms)),
+  ]);
+}
+
 const CATS = [
   ["system", "系统提示词", "#6b8cff"],
   ["tools", "工具定义", "#8b5cf6"],
@@ -46,9 +71,9 @@ const state = {
   steps: [],
   selected: null,
   detail: null,
-  // 消息列表的两种视图偏好，存在 localStorage 里，刷新后保持
-  msgsOrder: localStorage.getItem("ctxdump.msgsOrder") || "asc",
-  msgsMode: localStorage.getItem("ctxdump.msgsMode") || "all",
+  // 消息列表的两种视图偏好；沙箱 iframe 里 localStorage 不可用，自动退化成内存
+  msgsOrder: storage.getItem("ctxdump.msgsOrder") || "asc",
+  msgsMode: storage.getItem("ctxdump.msgsMode") || "all",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -141,11 +166,11 @@ function renderTimeline() {
 
   for (const step of state.steps) {
     const row = el("button", "step");
-    row.dataset.seq = step.seq;
-    if (state.selected === step.seq) row.classList.add("active");
+    row.dataset.id = step.id;
+    if (state.selected === step.id) row.classList.add("active");
 
     const head = el("div", "step-head");
-    head.appendChild(el("span", "seq", `#${step.seq}`));
+    head.appendChild(el("span", "seq", `#${step.n ?? step.seq}`));
     head.appendChild(el("span", "time", fmtTime(step.iso)));
     head.appendChild(el("span", "spacer"));
     head.appendChild(el("span", "ctx", `${step.n_contexts} 条`));
@@ -154,7 +179,7 @@ function renderTimeline() {
 
     // 用全体最大值做刻度，才能看出各轮相对大小
     row.appendChild(buildBar(step.breakdown || {}, step.tokens || 0, { scale: maxTotal }));
-    row.addEventListener("click", () => selectStep(step.seq));
+    row.addEventListener("click", () => selectStep(step.id));
     box.appendChild(row);
   }
 }
@@ -168,10 +193,10 @@ function renderDelta(step) {
   const old = prev.breakdown || {};
   const total = (cur.total || 0) - (old.total || 0);
   const head = el("div", "delta-head");
-  head.appendChild(el("span", "muted", `对比 #${prev.seq}：`));
+  head.appendChild(el("span", "muted", `对比 #${prev.n ?? prev.seq}：`));
   const badge = el("span", "badge " + (total >= 0 ? "up" : "down"), `${total >= 0 ? "+" : ""}${fmtTok(total)} tokens`);
   head.appendChild(badge);
-  head.appendChild(el("span", "muted", `（上下文 ${old.n_contexts} → ${step.n_contexts} 条）`));
+  head.appendChild(el("span", "muted", `（上下文 ${prev.n_contexts ?? "-"} → ${step.n_contexts} 条）`));
   box.appendChild(head);
 
   const chips = el("div", "chips");
@@ -247,7 +272,7 @@ function buildMessageSection(step) {
       state.msgsOrder,
       (v) => {
         state.msgsOrder = v;
-        localStorage.setItem("ctxdump.msgsOrder", v);
+        storage.setItem("ctxdump.msgsOrder", v);
         rerenderDetail();
       },
     ),
@@ -262,7 +287,7 @@ function buildMessageSection(step) {
       state.msgsMode,
       (v) => {
         state.msgsMode = v;
-        localStorage.setItem("ctxdump.msgsMode", v);
+        storage.setItem("ctxdump.msgsMode", v);
         rerenderDetail();
       },
     ),
@@ -290,7 +315,13 @@ function buildMessageSection(step) {
     const role = msg.role || "user";
     const tokens = (items[idx] || {}).tokens || 0;
     const msgState = (items[idx] || {}).state || "same";
-    const raw = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2);
+    // 后端已把 content 里的多模态分段抽成 text，优先用它，避免展示 JSON 噪音
+    const raw =
+      typeof msg.text === "string"
+        ? msg.text
+        : typeof msg.content === "string"
+          ? msg.content
+          : JSON.stringify(msg.content, null, 2);
 
     const d = document.createElement("details");
     d.className = "msg" + (msgState === "new" ? " msg-new" : msgState === "changed" ? " msg-chg" : "");
@@ -317,7 +348,7 @@ function renderDetail(step) {
 
   const head = el("div", "detail-head");
   const title = el("div", "detail-title");
-  title.appendChild(el("span", "seq", `#${step.seq}`));
+  title.appendChild(el("span", "seq", `#${step.n ?? step.seq}`));
   title.appendChild(el("span", "muted", `${step.iso || ""}`));
   head.appendChild(title);
 
@@ -395,16 +426,24 @@ function renderDetail(step) {
 }
 
 // ---------------------------------------------------------------- 数据流
-async function selectStep(seq) {
-  state.selected = seq;
+async function selectStep(id) {
+  state.selected = id;
   for (const row of document.querySelectorAll(".step")) {
-    row.classList.toggle("active", Number(row.dataset.seq) === Number(seq));
+    row.classList.toggle("active", row.dataset.id === id);
   }
   const box = $("#detail");
   box.textContent = "";
   box.appendChild(el("div", "empty", "加载中…"));
   try {
-    const res = await api("detail", { date: state.date, seq, full: 1 });
+    let res;
+    try {
+      res = await api("detail", { date: state.date, id, full: 1 });
+    } catch (firstErr) {
+      // 后端还没重载成新版本时只认 seq，退回去再试一次
+      const step = state.steps.find((s) => s.id === id);
+      if (!step || step.seq === undefined) throw firstErr;
+      res = await api("detail", { date: state.date, seq: step.seq, full: 1 });
+    }
     state.detail = res.step;
     renderDetail(res.step);
   } catch (err) {
@@ -438,8 +477,8 @@ async function loadList() {
     state.steps = res.steps || [];
     renderTimeline();
     if (state.steps.length) {
-      const keep = state.steps.find((s) => s.seq === state.selected);
-      await selectStep((keep || state.steps[state.steps.length - 1]).seq);
+      const keep = state.steps.find((s) => s.id === state.selected);
+      await selectStep((keep || state.steps[state.steps.length - 1]).id);
     } else {
       $("#detail").textContent = "";
       $("#detail").appendChild(el("div", "empty", "没有可显示的请求。"));
@@ -451,7 +490,10 @@ async function loadList() {
 }
 
 async function boot() {
-  if (typeof bridge.ready === "function") await bridge.ready();
+  if (typeof bridge.ready === "function") {
+    // bridge 握手卡住时不要无限等待，8 秒后给出可读的错误
+    await withTimeout(bridge.ready(), 8000, "bridge.ready()");
+  }
   state.date = today();
   $("#date").value = state.date;
   $("#date").addEventListener("change", (e) => {
@@ -473,7 +515,14 @@ async function boot() {
   await loadList();
 }
 
-boot().catch((err) => {
-  document.body.textContent = "";
-  document.body.appendChild(el("div", "empty", `初始化失败：${err.message}`));
-});
+boot()
+  .then(() => {
+    window.__ctxDumpBooted = true;
+  })
+  .catch((err) => {
+    const box = $("#timeline");
+    if (box) {
+      box.textContent = "";
+      box.appendChild(el("div", "empty", `初始化失败：${err.message}`));
+    }
+  });

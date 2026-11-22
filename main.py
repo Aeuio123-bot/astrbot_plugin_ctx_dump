@@ -105,12 +105,29 @@ def _msg_text(msg: Any) -> str:
         return str(msg)
     content = msg.get("content")
     if isinstance(content, str):
+        # AstrBot 有时把多模态内容序列化成 JSON 字符串存进 content
+        stripped = content.lstrip()
+        if stripped[:1] in ("[", "{"):
+            try:
+                parsed = json.loads(content)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list) and all(isinstance(p, dict) for p in parsed):
+                parts = []
+                for p in parsed:
+                    for key in ("text", "think", "content"):
+                        v = p.get(key)
+                        if isinstance(v, str) and v.strip():
+                            parts.append(v)
+                            break
+                if parts:
+                    return "\n".join(parts)
         return content
     if isinstance(content, list):
         parts = []
         for p in content:
             if isinstance(p, dict):
-                parts.append(p.get("text") or json.dumps(p, ensure_ascii=False))
+                parts.append(p.get("text") or p.get("think") or json.dumps(p, ensure_ascii=False))
             else:
                 parts.append(str(p))
         return "\n".join(parts)
@@ -189,6 +206,17 @@ def read_day(data_dir: Path, date: str) -> list[dict]:
     return out
 
 
+def record_id(rec: dict) -> str:
+    """稳定 id：毫秒时间戳 + 进程内序号。
+
+    seq 在插件重载后会从 1 重新计数，同一天里会出现多个 seq=1，不能当主键用。
+    """
+    rid = rec.get("id")
+    if rid:
+        return str(rid)
+    return f"{int(float(rec.get('ts') or 0) * 1000)}-{rec.get('seq')}"
+
+
 def build_sessions(records: list[dict]) -> dict:
     counts: dict[str, dict] = {}
     for rec in records:
@@ -203,45 +231,71 @@ def build_sessions(records: list[dict]) -> dict:
 
 
 def build_list(records: list[dict], umo: str, limit: int) -> dict:
+    reqs = [r for r in records if r.get("kind") != "response"]
+    # 按时间排序并给当天每条请求一个稳定序号 n（与 seq 无关，重载后不会重复）
+    reqs.sort(key=lambda r: (float(r.get("ts") or 0), r.get("seq") or 0))
     steps = []
-    for rec in records:
-        if rec.get("kind") == "response":
-            continue
+    for n, rec in enumerate(reqs, start=1):
         if umo and rec.get("umo") != umo:
             continue
-        steps.append(_summary(rec))
-    steps.sort(key=lambda s: s.get("seq") or 0)
+        s = _summary(rec)
+        s["n"] = n
+        s["id"] = record_id(rec)
+        steps.append(s)
     total = len(steps)
     if limit and total > limit:
         steps = steps[-limit:]
     return {"umo": umo, "total": total, "steps": steps}
 
 
-def build_detail(records: list[dict], seq: int, full: bool) -> dict | None:
+def build_detail(records: list[dict], rid: str, full: bool) -> dict | None:
     target = None
     for rec in records:
-        if rec.get("kind") == "response" or rec.get("seq") != seq:
+        if rec.get("kind") == "response":
             continue
-        target = rec
+        if record_id(rec) == rid:
+            target = rec
     if target is None:
         return None
 
+    # 上一轮：同一会话里时间上紧邻的前一条（seq 会因插件重载重置，不能用它比较先后）
     prev = None
+    t_cur = float(target.get("ts") or 0)
     for rec in records:
-        if rec.get("kind") == "response" or rec.get("seq") == seq:
+        if rec.get("kind") == "response" or rec is target:
             continue
-        if rec.get("umo") == target.get("umo") and (rec.get("seq") or 0) < seq:
-            if prev is None or (rec.get("seq") or 0) > (prev.get("seq") or 0):
-                prev = rec
+        if rec.get("umo") != target.get("umo"):
+            continue
+        t = float(rec.get("ts") or 0)
+        if t < t_cur and (prev is None or t > float(prev.get("ts") or 0)):
+            prev = rec
 
     detail = dict(target)
-    if not full:
-        detail["contexts"] = [
-            {**m, "content": _msg_text(m)[:4000]} if isinstance(m, dict) else m
-            for m in (target.get("contexts") or [])
-        ]
+    # 统一附加 text：AstrBot 的 content 可能是 JSON 字符串（多模态分段），
+    # 直接展示是一堆 {"type":"text"} 噪音，这里先抽成纯文本给界面用。
+    ctx_out = []
+    for m in (target.get("contexts") or []):
+        if isinstance(m, dict):
+            item = dict(m)
+            item["text"] = _msg_text(m)
+            if not full:
+                item["content"] = item["text"][:4000]
+            ctx_out.append(item)
+        else:
+            ctx_out.append(m)
+    detail["contexts"] = ctx_out
     detail["breakdown"] = _breakdown(target)
     detail["prev"] = _summary(prev) if prev else None
+    detail["id"] = record_id(target)
+    # 当天序号 n（与时间线一致），只用于展示
+    ordered = sorted(
+        (r for r in records if r.get("kind") != "response"),
+        key=lambda r: (float(r.get("ts") or 0), r.get("seq") or 0),
+    )
+    for idx, r in enumerate(ordered, start=1):
+        if r is target:
+            detail["n"] = idx
+            break
 
     # 逐条消息：估算 token + 与上一轮的关系（first / new / changed / same）
     # AstrBot 通常把新消息追加在末尾，所以按下标对齐；上下文被压缩时可能整体错位，
@@ -346,6 +400,7 @@ class CtxDumpPlugin(Star):
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -365,6 +420,8 @@ class CtxDumpPlugin(Star):
                 body = target.read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
+                # 与 AstrBot 的插件视图一致：允许 sandbox iframe（opaque origin）加载资源
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -392,11 +449,25 @@ class CtxDumpPlugin(Star):
                                 ),
                             }
                         elif name == "detail":
+                            rid = str(query.get("id", "") or "")
+                            if not rid:
+                                seq = int(query.get("seq", 0) or 0)
+                                cands = [
+                                    r for r in records
+                                    if r.get("kind") != "response" and r.get("seq") == seq
+                                ]
+                                if not cands:
+                                    return self._json(
+                                        {"status": "error", "message": "找不到该请求"}, 404
+                                    )
+                                rid = record_id(cands[-1])
                             step = build_detail(
-                                records, int(query.get("seq", 0) or 0), bool(int(query.get("full", 0) or 0))
+                                records, rid, bool(int(query.get("full", 0) or 0))
                             )
                             if step is None:
-                                return self._json({"status": "error", "message": "找不到该 seq"}, 404)
+                                return self._json(
+                                    {"status": "error", "message": "找不到该请求"}, 404
+                                )
                             payload = {"date": date, "step": step}
                         else:
                             return self._json({"status": "error", "message": "未知接口"}, 404)
@@ -505,10 +576,13 @@ class CtxDumpPlugin(Star):
             except Exception:
                 sender = ""
 
+            now = time.time()
             record = {
-                "ts": time.time(),
+                "ts": now,
                 "iso": _iso_now(),
                 "seq": self._seq,
+                # 稳定主键：seq 会因插件重载重置，不能单独当 id
+                "id": f"{int(now * 1000)}-{self._seq}",
                 "trace_id": trace_id,
                 "umo": getattr(event, "unified_msg_origin", ""),
                 "platform": platform,
@@ -572,12 +646,21 @@ class CtxDumpPlugin(Star):
         date = request.query.get("date", _today())
         if not _DATE_RE.match(date):
             return error_response("date 需为 YYYY-MM-DD")
-        seq = request.query.get("seq", 0, type=int)
+        rid = str(request.query.get("id", "") or "")
         full = bool(request.query.get("full", 0, type=int))
         records = await asyncio.to_thread(read_day, self.dir, date)
-        step = build_detail(records, seq, full)
+        if not rid:  # 兼容旧链接：只给了 seq 时取该 seq 的最后一条
+            seq = request.query.get("seq", 0, type=int)
+            cands = [
+                r for r in records
+                if r.get("kind") != "response" and r.get("seq") == seq
+            ]
+            if not cands:
+                return error_response("找不到该请求", status_code=404)
+            rid = record_id(cands[-1])
+        step = build_detail(records, rid, full)
         if step is None:
-            return error_response("找不到该 seq", status_code=404)
+            return error_response("找不到该请求", status_code=404)
         return json_response({"date": date, "step": step})
 
     # ------------------------------------------------------------------ 指令
